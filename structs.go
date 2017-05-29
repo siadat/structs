@@ -20,16 +20,21 @@ type Struct struct {
 	raw     interface{}
 	value   reflect.Value
 	TagName string
+	TagFunc TagFunc
 }
 
 // New returns a new *Struct with the struct s. It panics if the s's kind is
 // not struct.
 func New(s interface{}) *Struct {
-	return &Struct{
+	st := &Struct{
 		raw:     s,
 		value:   strctVal(s),
 		TagName: DefaultTagName,
 	}
+	st.TagFunc = func(field reflect.StructField) string {
+		return field.Tag.Get(st.TagName)
+	}
+	return st
 }
 
 // Map converts the given struct to a map[string]interface{}, where the keys
@@ -84,6 +89,8 @@ func (s *Struct) Map() map[string]interface{} {
 	return out
 }
 
+type TagFunc func(reflect.StructField) string
+
 // FillMap is the same as Map. Instead of returning the output, it fills the
 // given map.
 func (s *Struct) FillMap(out map[string]interface{}) {
@@ -99,7 +106,7 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 		isSubStruct := false
 		var finalVal interface{}
 
-		tagName, tagOpts := parseTag(field.Tag.Get(s.TagName))
+		tagName, tagOpts := parseTag(s.TagFunc(field))
 		if tagName != "" {
 			name = tagName
 		}
@@ -179,7 +186,7 @@ func (s *Struct) Values() []interface{} {
 	for _, field := range fields {
 		val := s.value.FieldByName(field.Name)
 
-		_, tagOpts := parseTag(field.Tag.Get(s.TagName))
+		_, tagOpts := parseTag(s.TagFunc(field))
 
 		// if the value is a zero value and the field is marked as omitempty do
 		// not include
@@ -222,7 +229,7 @@ func (s *Struct) Values() []interface{} {
 //
 // It panics if s's kind is not struct.
 func (s *Struct) Fields() []*Field {
-	return getFields(s.value, s.TagName)
+	return getFields(s.value, s.TagFunc)
 }
 
 // Names returns a slice of field names. A struct tag with the content of "-"
@@ -233,7 +240,7 @@ func (s *Struct) Fields() []*Field {
 //
 // It panics if s's kind is not struct.
 func (s *Struct) Names() []string {
-	fields := getFields(s.value, s.TagName)
+	fields := getFields(s.value, s.TagFunc)
 
 	names := make([]string, len(fields))
 
@@ -244,7 +251,7 @@ func (s *Struct) Names() []string {
 	return names
 }
 
-func getFields(v reflect.Value, tagName string) []*Field {
+func getFields(v reflect.Value, tagFunc TagFunc) []*Field {
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
@@ -256,7 +263,7 @@ func getFields(v reflect.Value, tagName string) []*Field {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 
-		if tag := field.Tag.Get(tagName); tag == "-" {
+		if tag, _ := parseTag(tagFunc(field)); tag == "-" {
 			continue
 		}
 
@@ -295,9 +302,10 @@ func (s *Struct) FieldOk(name string) (*Field, bool) {
 	}
 
 	return &Field{
-		field:      field,
-		value:      s.value.FieldByName(name),
-		defaultTag: s.TagName,
+		field:          field,
+		value:          s.value.FieldByName(name),
+		defaultTagName: s.TagName,
+		defaultTagFunc: s.TagFunc,
 	}, true
 }
 
@@ -323,7 +331,7 @@ func (s *Struct) IsZero() bool {
 	for _, field := range fields {
 		val := s.value.FieldByName(field.Name)
 
-		_, tagOpts := parseTag(field.Tag.Get(s.TagName))
+		_, tagOpts := parseTag(s.TagFunc(field))
 
 		if IsStruct(val.Interface()) && !tagOpts.Has("omitnested") {
 			ok := IsZero(val.Interface())
@@ -370,7 +378,7 @@ func (s *Struct) HasZero() bool {
 	for _, field := range fields {
 		val := s.value.FieldByName(field.Name)
 
-		_, tagOpts := parseTag(field.Tag.Get(s.TagName))
+		_, tagOpts := parseTag(s.TagFunc(field))
 
 		if IsStruct(val.Interface()) && !tagOpts.Has("omitnested") {
 			ok := HasZero(val.Interface())
@@ -417,7 +425,7 @@ func (s *Struct) structFields() []reflect.StructField {
 		}
 
 		// don't check if it's omitted
-		if tag := field.Tag.Get(s.TagName); tag == "-" {
+		if tag, _ := parseTag(s.TagFunc(field)); tag == "-" {
 			continue
 		}
 
@@ -520,6 +528,7 @@ func (s *Struct) nested(val reflect.Value) interface{} {
 	case reflect.Struct:
 		n := New(val.Interface())
 		n.TagName = s.TagName
+		n.TagFunc = s.TagFunc
 		m := n.Map()
 
 		// do not add the converted value if there are no exported fields, ie:
